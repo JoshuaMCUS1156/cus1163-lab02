@@ -1,0 +1,154 @@
+#include "proc_reader.h"
+
+// Helper: check if a directory name is all digits (i.e., a PID)
+static int is_numeric_dir(const char *name) {
+    if (!name || !*name) return 0;
+    for (const char *p = name; *p; ++p) {
+        if (*p < '0' || *p > '9') return 0;
+    }
+    return 1;
+}
+
+// === Option 1: List all /proc process directories ===
+int list_process_directories(void) {
+    DIR *dir = opendir("/proc");
+    if (!dir) {
+        perror("opendir(/proc)");
+        return -1;
+    }
+
+    printf("Listing all process directories in /proc...\n");
+    printf("Process directories in /proc:\n");
+    printf("%-8s %-20s\n", "PID", "Type");
+    printf("%-8s %-20s\n", "---", "----");
+
+    struct dirent *entry;
+    int count = 0;
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_DIR && is_numeric_dir(entry->d_name)) {
+            printf("%-8s %-20s\n", entry->d_name, "process");
+            count++;
+        }
+    }
+
+    closedir(dir);
+    printf("Found %d process directories\n", count);
+    printf("SUCCESS: Process directories listed!\n");
+    return 0;
+}
+
+// Read whole file using syscalls (open/read/close) and print to stdout
+static int print_file_syscalls(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror(path); return -1; }
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf) - 1)) > 0) {
+        buf[n] = '\0';
+        fputs(buf, stdout);
+    }
+    if (n < 0) { perror("read"); close(fd); return -1; }
+    if (close(fd) < 0) { perror("close"); return -1; }
+    return 0;
+}
+
+// Read first N lines via stdio (fopen/fgets)
+static int print_first_n_lines_stdio(const char *path, int n) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) { perror(path); return -1; }
+    char line[1024];
+    int count = 0;
+    while (count < n && fgets(line, sizeof(line), fp)) {
+        fputs(line, stdout);
+        count++;
+    }
+    if (fclose(fp) != 0) { perror("fclose"); return -1; }
+    return 0;
+}
+
+// === Option 2: Read process information for a given PID ===
+int read_process_information(pid_t pid) {
+    char status_path[256];
+    char cmdline_path[256];
+    snprintf(status_path, sizeof(status_path), "/proc/%d/status", pid);
+    snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%d/cmdline", pid);
+
+    printf("\nReading information for PID %d...\n\n", pid);
+    printf("--- Process Information for PID %d ---\n", pid);
+
+    // Print /proc/PID/status using syscalls
+    if (print_file_syscalls(status_path) != 0) {
+        fprintf(stderr, "Failed to read %s\n", status_path);
+        return -1;
+    }
+
+    // Print /proc/PID/cmdline (convert NULs to spaces)
+    printf("\n--- Command Line ---\n");
+    int fd = open(cmdline_path, O_RDONLY);
+    if (fd < 0) {
+        perror(cmdline_path);
+        return -1;
+    }
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof(buf));
+    if (n < 0) { perror("read cmdline"); close(fd); return -1; }
+    for (ssize_t i = 0; i < n; ++i) {
+        if (buf[i] == '\0') buf[i] = ' ';
+    }
+    if (n > 0) {
+        if (buf[n-1] != '\n') buf[(n < (ssize_t)sizeof(buf) ? n : (ssize_t)sizeof(buf)-1)] = '\n';
+        write(STDOUT_FILENO, buf, n);
+    }
+    if (close(fd) < 0) { perror("close cmdline"); return -1; }
+
+    printf("SUCCESS: Process information read!\n");
+    return 0;
+}
+
+// === Option 3: Show system information (first 10 lines of cpuinfo and meminfo) ===
+int show_system_information(void) {
+    printf("\nReading system information...\n\n");
+
+    printf("--- CPU Information (first 10 lines) ---\n");
+    if (print_first_n_lines_stdio("/proc/cpuinfo", 10) != 0) {
+        fprintf(stderr, "Failed to read /proc/cpuinfo\n");
+    }
+
+    printf("\n--- Memory Information (first 10 lines) ---\n");
+    if (print_first_n_lines_stdio("/proc/meminfo", 10) != 0) {
+        fprintf(stderr, "Failed to read /proc/meminfo\n");
+    }
+
+    printf("SUCCESS: System information displayed!\n");
+    return 0;
+}
+
+// === Option 4: Compare file operation methods for /proc/version ===
+int compare_file_methods(void) {
+    const char *path = "/proc/version";
+    printf("Comparing file operation methods...\n");
+    printf("Comparing file reading methods for: %s\n\n", path);
+
+    printf("=== Method 1: Using System Calls ===\n");
+    if (print_file_syscalls(path) != 0) {
+        fprintf(stderr, "System call method failed\n");
+    }
+    printf("\n");
+
+    printf("=== Method 2: Using Library Functions ===\n");
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        perror("fopen");
+    } else {
+        char line[4096];
+        while (fgets(line, sizeof(line), fp)) {
+            fputs(line, stdout);
+        }
+        if (fclose(fp) != 0) perror("fclose");
+    }
+
+    printf("\nNOTE: Run this program with strace to see the difference!\n");
+    printf("Example: strace -e trace=openat,read,write,close ./lab2\n");
+    return 0;
+}
